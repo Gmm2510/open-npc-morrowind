@@ -62,7 +62,9 @@ function Save-Photo($proc, $path) {
     $w = $rect.Right - $rect.Left; $h = $rect.Bottom - $rect.Top
     # (only the game's own picture: on this PC it draws its screen size in the window's top-left corner, and the rest of
     # the window shows whatever is behind it)
-    $size = Get-ItemProperty -Path $psKey -ErrorAction SilentlyContinue
+    # (a copy whose game file reads HKCU\Software\Bethesda Softworks\Morrowind has its own size there)
+    $size = Get-ItemProperty -Path 'HKCU:\Software\Bethesda Softworks\Morrowind' -ErrorAction SilentlyContinue
+    if (-not $size) { $size = Get-ItemProperty -Path $psKey -ErrorAction SilentlyContinue }
     if ($size -and $size.'Screen Width' -gt 0) { $w = [Math]::Min($w, [int]$size.'Screen Width'); $h = [Math]::Min($h, [int]$size.'Screen Height') }
     $bmp = New-Object System.Drawing.Bitmap $w, $h
     $g = [System.Drawing.Graphics]::FromImage($bmp)

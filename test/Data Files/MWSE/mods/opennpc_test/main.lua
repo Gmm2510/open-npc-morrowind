@@ -897,15 +897,22 @@ local function downState(r)
 end
 
 table.insert(steps, function()
-	-- (a real fight: her health down to 2, and a mudcrab after her, whose bite would kill her)
-	local r = her()
+	-- (a real fight: her health down to 2, and a mudcrab after her, whose bite would kill her. On a Balmora street: on the
+	-- Ebonheart dock the crab often never reached her)
+	coc("Balmora")
 	tes3.runLegacyScript({ command = "tgm" })   -- (he can't be hurt in these checks; off again after)
-	waitFor(10, function() return dist(r) < 400 end, function()
+	waitFor(15, function() local x = her() return x and sameCell(x) and dist(x) < 400 end, function()
+		local r = her()
 		tes3.setStatistic({ reference = r, name = "health", current = 2 })
 		local crab = tes3.createReference({ object = "mudcrab", position = companion.spotNear(r, 150, { tes3.player, r }), orientation = r.orientation, cell = r.cell })
 		later(0.5, function()
+			-- (a crab she can't kill before it bites: she fights back, and won one run before it got a bite in)
+			tes3.setStatistic({ reference = crab, name = "health", value = 500 })
 			crab.mobile:startCombat(r.mobile)
-			waitFor(25, function() return companion.state(r).down == true or r.mobile.isDead end, function()
+			waitFor(30, function()
+				if not companion.state(r).down and not r.mobile.isDead and crab.mobile.actionData.target ~= r.mobile then crab.mobile:startCombat(r.mobile) end
+				return companion.state(r).down == true or r.mobile.isDead
+			end, function()
 				later(1, function()
 					local m = r.mobile
 					check("goes down instead of dying", not m.isDead and m.health.current >= 1 and companion.state(r).down == true and m.isKnockedOut, downState(r))
