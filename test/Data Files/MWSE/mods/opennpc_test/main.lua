@@ -888,6 +888,72 @@ end)
 
 
 for _, s in ipairs(lookSteps) do table.insert(steps, s) end
+-- ------------------------------------------------------------------ knocked down, never dead
+
+local function downState(r)
+	local m = r.mobile
+	return string.format("down: %s, knocked out: %s, dead: %s, health %.0f/%.0f, fatigue %.0f", tostring(companion.state(r).down == true),
+		tostring(m.isKnockedOut), tostring(m.isDead), m.health.current, m.health.base, m.fatigue.current)
+end
+
+table.insert(steps, function()
+	-- (a real fight: her health down to 2, and a mudcrab after her, whose bite would kill her)
+	local r = her()
+	tes3.runLegacyScript({ command = "tgm" })   -- (he can't be hurt in these checks; off again after)
+	waitFor(10, function() return dist(r) < 400 end, function()
+		tes3.setStatistic({ reference = r, name = "health", current = 2 })
+		local crab = tes3.createReference({ object = "mudcrab", position = companion.spotNear(r, 150, { tes3.player, r }), orientation = r.orientation, cell = r.cell })
+		later(0.5, function()
+			crab.mobile:startCombat(r.mobile)
+			waitFor(25, function() return companion.state(r).down == true or r.mobile.isDead end, function()
+				later(1, function()
+					local m = r.mobile
+					check("goes down instead of dying", not m.isDead and m.health.current >= 1 and companion.state(r).down == true and m.isKnockedOut, downState(r))
+					-- (the crab goes for her again while she's down: nothing lands)
+					local hp = m.health.current
+					crab.mobile:startCombat(r.mobile)
+					later(5, function()
+						check("nothing hurts her while she's down", r.mobile.health.current >= hp and not r.mobile.isDead and companion.state(r).down == true,
+							string.format("health %.0f when she went down, %.0f after 5 s more of the crab; %s", hp, r.mobile.health.current, downState(r)))
+						-- (the crab turns on him: a fight still going on, she stays down; it dies, she gets up)
+						crab.mobile:startCombat(tes3.mobilePlayer)
+						later(6, function()
+							local stillDown = companion.state(r).down == true
+							local during = downState(r)
+							crab.mobile:kill()
+							waitFor(12, function() return companion.state(r).down ~= true and not r.mobile.isKnockedOut end, function(ok)
+								local m2 = r.mobile
+								check("stays down while a fight goes on, gets up after", stillDown and ok and m2.health.current >= math.floor(m2.health.base * 0.3) - 1
+									and companion.state(r).mode == "follow",
+									string.format("6 s into his fight: %s; after: %s, %s", during, downState(r), companion.describeAI(r)))
+								tes3.runLegacyScript({ command = "tgm" })
+								waitFor(10, function() return dist(r) < 400 end, function() nextStep() end)
+							end)
+						end)
+					end)
+				end)
+			end)
+		end)
+	end)
+end)
+
+table.insert(steps, function()
+	-- (killed outright, a way round the knock-down: she comes back next to him, as she was)
+	local r = her()
+	local name = companion.shownName()
+	r.mobile:kill()
+	later(1, function()
+		local died = r.mobile.isDead
+		waitFor(15, function() local x = her() return x and x.mobile and not x.mobile.isDead and sameCell(x) and dist(x) < 600 end, function(ok)
+			local x = her()
+			check("comes back if she dies anyway", died and ok and copies() == 1 and stats(x) == leveled and looksLike(x, look.lookFor(name)),
+				string.format("dead a second after: %s; now %s, %.0f away, %d of her; %s (after leveling: %s); %s", tostring(died), downState(x), dist(x),
+					copies(), stats(x), tostring(leveled), look.describe(x)))
+			nextStep()
+		end)
+	end)
+end)
+
 table.insert(steps, function()
 	-- (over the whole run: fights may hurt her, the ways of getting around must not)
 	local bad = {}
@@ -1093,7 +1159,7 @@ end)
 
 -- (a hard stop, so a stuck step never leaves the game running)
 event.register(tes3.event.initialized, function()
-	timer.start({ type = timer.real, duration = 600, callback = function()
+	timer.start({ type = timer.real, duration = 800, callback = function()
 		say("TIMEOUT: the run took too long")
 		finish()
 	end })

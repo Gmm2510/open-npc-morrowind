@@ -11,6 +11,9 @@ source (MIT). Part of [Open NPC](https://github.com/Gmm2510/open-npc).
 - **Follows** you on foot, **waits** where you tell her, and **comes** when called, from anywhere.
 - **Fights** whatever attacks you, and helps when you start a fight.
 - **Levels up with you:** more health, stronger, better with blades, armor and running. Her level-ups stay with her for good.
+- **Never dies for good:** a hit that would kill her knocks her down instead. While she's down nothing hurts her, and she gets
+  back up when the fight around you is over (30 seconds at most) with part of her health. If she's killed some other way, she
+  comes back next to you a few seconds later, as she was.
 - **Never gets lost:**
   - Silt striders and boats take her along (the game does it when she's following close by); if she was left behind, even
     indoors somewhere else, she turns up next to you when you arrive.
@@ -69,7 +72,7 @@ The first start writes `Data Files\MWSE\config\Open NPC.json`:
 
 When she asks, the AI hears who she is (health, level, following or waiting, who she's fighting), how you are, where you both
 are (the place and region), the time of day, how far apart you are, who's nearby, what happened lately (doors, travel, fights,
-level-ups, your journal) and what she was told lately. It answers with the `act` tool: `follow`, `wait`, `come`, `fight`
+level-ups, your journal, being knocked down and getting up) and what she was told lately. It answers with the `act` tool: `follow`, `wait`, `come`, `fight`
 or `stop_fighting`.
 
 ### Voice apps: the wait door
@@ -109,6 +112,7 @@ long jump, fights what attacks you, levels up; stays on the ground while you lev
 place; comes along on a silt strider and a boat (through the game's own travel menus) and isn't left behind; keeps her
 level-ups after time apart; comes to you in the water at the surface; doesn't drown; is never hurt by a fall or by drowning;
 her look menu changes her face, hair and outfit, a new race swaps her and keeps what's hers, each companion keeps her own look;
+goes down instead of dying, takes no hits while down, stays down while a fight goes on and gets up after, comes back if killed;
 and all of it after saving and loading. The look checks also take photos (the runner saves them in a
 `morrowind-work\photos` folder next to the copy).
 

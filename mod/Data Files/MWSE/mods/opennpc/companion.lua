@@ -1,7 +1,7 @@
 --- Open NPC for Morrowind: a companion who plays the whole game with you.
 --- She shows up once the character is made, follows you, waits when told, fights beside you, catches up after doors,
 --- Recall, Intervention, silt striders and boats, stays on the ground under you while you levitate and on the water over
---- you while you swim, never drowns, and levels up with you. Her person comes from OpenNPC.esp (Morrowind can't make a new
+--- you while you swim, never drowns, never dies for good (knocked down, she gets back up), and levels up with you. Her person comes from OpenNPC.esp (Morrowind can't make a new
 --- person while the game runs); everything she does is here.
 
 local brain = require("opennpc.brain")
@@ -365,6 +365,7 @@ function this.situation()
 		local doing = st.mode == "wait" and ("waiting in " .. r.cell.displayName) or "following " .. owner
 		local fighting = r.mobile.inCombat and r.mobile.actionData.target and r.mobile.actionData.target.reference
 		if fighting then doing = doing .. ", fighting " .. fighting.object.name end
+		if st.down then doing = "knocked down, getting back up soon" end
 		table.insert(out, { "you", string.format("%s, health %s, level %d, %s", r.object.name, stat(r.mobile), st.level, doing) })
 	end
 	local m = tes3.mobilePlayer
@@ -417,6 +418,7 @@ end
 function this.command(action, args, byPlayer)
 	local r = this.her()
 	if not r or not r.mobile or r.mobile.isDead then return false, "she isn't here" end
+	if this.state(r).down and (action == "fight" or action == "come") then return false, "she's knocked down" end
 	if action == "follow" then this.follow(r) return true end
 	if action == "wait" then this.wait(r) return true end
 	if action == "come" then
@@ -474,6 +476,7 @@ function this.tick()
 	end
 	if r.mobile and r.mobile.isDead then return end
 	keepBreath(r)
+	if this.state(r).down then this.whileDown(r) return end
 	if this.state(r).mode ~= "follow" then return end
 	local at = this.standPoint(r)
 	if isFar(r, at) then this.bringToPlayer(r) return end
@@ -553,9 +556,96 @@ function this.onJournal(e)
 	if text and text ~= "" then brain.happened("journal: " .. text:gsub("%s+", " "):sub(1, 180)) end
 end
 
+-- ------------------------------------------------------------------ knocked down, never dead
+
+local downTicks = 0   -- (half-seconds she's been down)
+
+--- Is anything fighting him or her nearby?
+local function fightGoingOn(r)
+	for _, a in ipairs(tes3.findActorsInProximity({ reference = tes3.player, range = 2500 })) do
+		local target = a.actionData and a.actionData.target
+		if a.reference ~= tes3.player and a.reference ~= r and not a.isDead and a.inCombat and (target == tes3.mobilePlayer or target == r.mobile) then
+			return true
+		end
+	end
+	return false
+end
+
+local function knockOut(r) tes3.setStatistic({ reference = r, name = "fatigue", current = -100 }) end
+
+--- Knocked down instead of killed: she lies on the ground (the game's own knocked-out state, fatigue under zero), takes
+--- no damage, and what was fighting her leaves her be.
+function this.goDown(r)
+	local st = this.state(r)
+	if not r.mobile or r.mobile.isDead then return end
+	st.down = true   -- (already set by the hit that knocked her down; set here too for any other way in)
+	downTicks = 0
+	tes3.setStatistic({ reference = r, name = "health", current = math.max(1, math.min(r.mobile.health.current, 3)) })
+	r.mobile:stopCombat(true)
+	for _, a in ipairs(tes3.findActorsInProximity({ reference = r, range = 3000 })) do
+		if a.actionData and a.actionData.target == r.mobile then a:stopCombat(true) end
+	end
+	knockOut(r)
+	log("knocked down")
+	brain.happened("you were knocked down")
+	brain.want("downed")
+end
+
+--- Back on her feet with part of her health, doing what she was told before.
+function this.getUp(r)
+	local st = this.state(r)
+	st.down = false
+	local m = r.mobile
+	tes3.setStatistic({ reference = r, name = "health", current = math.max(m.health.current, math.floor(m.health.base * 0.3)) })
+	tes3.setStatistic({ reference = r, name = "fatigue", current = math.floor(m.fatigue.base * 0.5) })
+	if st.mode == "follow" then setFollow(r) end
+	log("got back up (%.0f health)", m.health.current)
+	brain.happened("you got back up")
+end
+
+--- Twice a second while she's down: kept down, and up again 5 seconds after the fighting stops (30 at most).
+function this.whileDown(r)
+	downTicks = downTicks + 1
+	if r.mobile.fatigue.current > -50 then knockOut(r) end
+	if (downTicks >= 10 and not fightGoingOn(r)) or downTicks >= 60 then this.getUp(r) end
+end
+
+--- Before a hit lands on her: a hit that would leave her at almost nothing doesn't land, and knocks her down instead;
+--- while she's down, none land. (Let through but trimmed to leave her at 1, the hit still killed her.)
+function this.onDamage(e)
+	local r = this.her()
+	if not r or e.reference ~= r then return end
+	local st = this.state(r)
+	if st.down then e.block = true e.damage = 0 return end
+	if e.mobile.health.current - e.damage < 3 then
+		e.block = true
+		e.damage = 0
+		st.down = true   -- (at once, so no other hit this frame lands; the rest of going down next frame)
+		this.later(r, this.goDown)
+	end
+end
+
+--- If she dies anyway (a way round the hit above), she comes back next to him a few seconds later, as she was.
+function this.comeBack(r)
+	if not r.mobile or not r.mobile.isDead then return end
+	r.mobile:resurrect({ resetState = false })
+	this.later(r, function(x)
+		this.state(x).down = false
+		this.restoreStats(x)
+		tes3.setStatistic({ reference = x, name = "health", current = math.floor(x.mobile.health.base * 0.3) })
+		look.apply(x)
+		this.bringToPlayer(x)
+		log("came back")
+		brain.happened("you came back")
+	end)
+end
+
 function this.onDeath(e)
 	local r = this.her()
-	if r and e.reference == r then brain.happened("you went down") brain.want("downed")
+	if r and e.reference == r then
+		log("died anyway; back in a few seconds")
+		brain.happened("you went down")
+		this.later(r, this.comeBack, 5)
 	elseif e.reference == tes3.player then brain.happened(this.ownerName() .. " died") end
 end
 
@@ -592,6 +682,7 @@ function this.init()
 	event.register(tes3.event.activate, this.onActivate)
 	event.register(tes3.event.journal, this.onJournal)
 	event.register(tes3.event.death, this.onDeath)
+	event.register(tes3.event.damage, this.onDamage)
 	event.register(tes3.event.mobileActivated, this.onMobileActivated)
 	brain.init(this, this.config)
 	log("ready (her AI: %s)", tostring(this.config.url))
