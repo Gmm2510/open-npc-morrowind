@@ -10,7 +10,7 @@ import subprocess
 import sys
 import zipfile
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 

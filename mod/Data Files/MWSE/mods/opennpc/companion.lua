@@ -1,7 +1,7 @@
 --- Open NPC for Morrowind: a companion who plays the whole game with you.
 --- She shows up once the character is made, follows you, waits when told, fights beside you, catches up after doors,
 --- Recall, Intervention, silt striders and boats, stays on the ground under you while you levitate and on the water over
---- you while you swim, never drowns, never dies for good (knocked down, she gets back up), and levels up with you. Her person comes from OpenNPC.esp (Morrowind can't make a new
+--- you while you swim, never drowns, can be revived at her body when she dies, and levels up with you. Her person comes from OpenNPC.esp (Morrowind can't make a new
 --- person while the game runs); everything she does is here.
 
 local brain = require("opennpc.brain")
@@ -164,8 +164,11 @@ function this.describeAI(r)
 		d, tostring(p.followDistance), tostring(p.duration), tostring(p.isDone), tostring(p.isMoving))
 end
 
--- (stuck while following: the closest she's been to him lately, and for how many ticks she hasn't beaten it)
-local stuck = { best = math.huge, ticks = 0 }
+-- (stuck while following: where she was when the last 6 seconds began, and the closest she's been to him lately, each
+-- with how many ticks it has held)
+local stuck = {}
+local function resetStuck(r, d) stuck = { pos = r and r.position:copy(), moveTicks = 0, best = d or math.huge, closerTicks = 0 } end
+resetStuck()
 
 --- Runs fn(ref) a frame later (or after `seconds`), only if `ref` is still there: by then it can be gone (a race swap
 --- deletes her old copy), and touching a gone one is an error.
@@ -217,7 +220,7 @@ function this.bringToPlayer(r)
 	log("(%s)", why)
 	if this.state(r).mode == "follow" then setFollow(r) end
 	this.cameOver = (this.cameOver or 0) + 1
-	stuck = { best = math.huge, ticks = 0 }
+	resetStuck()
 	log("came over to %s", tes3.player.cell.id)
 end
 
@@ -234,6 +237,7 @@ function this.wait(r)
 	r = r or this.her()
 	if not r then return end
 	this.state(r).mode = "wait"
+	if r.mobile and r.mobile.forceRun ~= nil then r.mobile.forceRun = false end
 	tes3.setAIWander({ reference = r, idles = { 0, 0, 0, 0, 0, 0, 0, 0 }, range = 0 })
 	log("waiting in %s", r.cell.id)
 end
@@ -365,7 +369,7 @@ function this.situation()
 		local doing = st.mode == "wait" and ("waiting in " .. r.cell.displayName) or "following " .. owner
 		local fighting = r.mobile.inCombat and r.mobile.actionData.target and r.mobile.actionData.target.reference
 		if fighting then doing = doing .. ", fighting " .. fighting.object.name end
-		if st.down then doing = "knocked down, getting back up soon" end
+		if r.mobile.isDead then doing = "dead, until " .. owner .. " revives you" end
 		table.insert(out, { "you", string.format("%s, health %s, level %d, %s", r.object.name, stat(r.mobile), st.level, doing) })
 	end
 	local m = tes3.mobilePlayer
@@ -417,8 +421,8 @@ end
 --- Does what the AI picked. Returns ok, why-not.
 function this.command(action, args, byPlayer)
 	local r = this.her()
-	if not r or not r.mobile or r.mobile.isDead then return false, "she isn't here" end
-	if this.state(r).down and (action == "fight" or action == "come") then return false, "she's knocked down" end
+	if not r or not r.mobile then return false, "she isn't here" end
+	if r.mobile.isDead then return false, "she's dead until he revives her" end
 	if action == "follow" then this.follow(r) return true end
 	if action == "wait" then this.wait(r) return true end
 	if action == "come" then
@@ -476,24 +480,24 @@ function this.tick()
 	end
 	if r.mobile and r.mobile.isDead then return end
 	keepBreath(r)
-	if this.state(r).down then this.whileDown(r) return end
 	if this.state(r).mode ~= "follow" then return end
 	local at = this.standPoint(r)
 	if isFar(r, at) then this.bringToPlayer(r) return end
-	-- (stuck on the way to him: more than 700 away and not a step closer for 6 seconds, she comes over, behind him. On a
-	-- Balmora street she walked 60 units after him and then stood there, caught on something. Up on a roof he flew to,
-	-- the same: she can't get closer, so she comes up.)
 	local d = r.position:distance(at)
-	if d < 700 then
-		stuck.best, stuck.ticks = d, 0
-	elseif d < stuck.best - 64 then
-		stuck.best, stuck.ticks = d, 0
-	else
-		stuck.ticks = stuck.ticks + 1
-		if stuck.ticks >= 12 then
-			log("stuck %.0f away for 6 seconds", d)
-			this.bringToPlayer(r)
-		end
+	-- (fallen behind: she runs to catch up, and walks again once she's close)
+	local m = r.mobile
+	if m and m.forceRun ~= nil then
+		if d > 350 then m.forceRun = true elseif d < 200 then m.forceRun = false end
+	end
+	-- (stuck on the way to him, more than 700 away: she comes over, behind him, when she hasn't moved herself in 6
+	-- seconds (caught on something), or hasn't got any closer in 20 (she can't reach him: a roof he flew to). Just being
+	-- slower than him isn't stuck: that rule brought her over every 6 seconds while she walked after him.)
+	if d < 700 or not stuck.pos then resetStuck(r, d) return end
+	if r.position:distance(stuck.pos) > 150 then stuck.pos, stuck.moveTicks = r.position:copy(), 0 else stuck.moveTicks = stuck.moveTicks + 1 end
+	if d < stuck.best - 64 then stuck.best, stuck.closerTicks = d, 0 else stuck.closerTicks = stuck.closerTicks + 1 end
+	if stuck.moveTicks >= 12 or stuck.closerTicks >= 40 then
+		log("stuck %.0f away (%s)", d, stuck.moveTicks >= 12 and "not moving for 6 seconds" or "no closer in 20 seconds")
+		this.bringToPlayer(r)
 	end
 end
 
@@ -508,6 +512,7 @@ function this.onLoaded()
 		r = look.apply(r) or r   -- (her look, which may have been changed in the menu meanwhile)
 		this.applyName(r)
 		local st = this.state(r)
+		st.down = nil   -- (from 0.1.1's knock-down, gone)
 		if st.mode == "wait" then this.wait(r) else this.follow(r) end
 		this.restoreStats(r)   -- (first: a level gained since is added on top of her real stats)
 		this.catchUp(r)
@@ -556,118 +561,53 @@ function this.onJournal(e)
 	if text and text ~= "" then brain.happened("journal: " .. text:gsub("%s+", " "):sub(1, 180)) end
 end
 
--- ------------------------------------------------------------------ knocked down, never dead
+-- ------------------------------------------------------------------ dying, and being revived
 
-local downTicks = 0   -- (half-seconds she's been down)
-
---- Is anything fighting him or her nearby?
-local function fightGoingOn(r)
-	for _, a in ipairs(tes3.findActorsInProximity({ reference = tes3.player, range = 2500 })) do
-		local target = a.actionData and a.actionData.target
-		if a.reference ~= tes3.player and a.reference ~= r and not a.isDead and a.inCombat and (target == tes3.mobilePlayer or target == r.mobile) then
-			return true
-		end
-	end
-	return false
-end
-
-local function knockOut(r) tes3.setStatistic({ reference = r, name = "fatigue", current = -100 }) end
-
---- Knocked down instead of killed: she lies on the ground (the game's own knocked-out state, fatigue under zero), takes
---- no damage, and what was fighting her leaves her be.
-function this.goDown(r)
-	local st = this.state(r)
-	if not r.mobile or r.mobile.isDead then return end
-	st.down = true   -- (already set by the hit that knocked her down; set here too for any other way in)
-	downTicks = 0
-	tes3.setStatistic({ reference = r, name = "health", current = math.max(1, math.min(r.mobile.health.current, 3)) })
-	r.mobile:stopCombat(true)
-	for _, a in ipairs(tes3.findActorsInProximity({ reference = r, range = 3000 })) do
-		if a.actionData and a.actionData.target == r.mobile then a:stopCombat(true) end
-	end
-	knockOut(r)
-	log("knocked down")
-	brain.happened("you were knocked down")
-	brain.want("downed")
-end
-
---- Back on her feet with part of her health, doing what she was told before.
-function this.getUp(r)
-	local st = this.state(r)
-	st.down = false
-	local m = r.mobile
-	tes3.setStatistic({ reference = r, name = "health", current = math.max(m.health.current, math.floor(m.health.base * 0.3)) })
-	tes3.setStatistic({ reference = r, name = "fatigue", current = math.floor(m.fatigue.base * 0.5) })
-	if st.mode == "follow" then setFollow(r) end
-	log("got back up (%.0f health)", m.health.current)
-	brain.happened("you got back up")
-end
-
---- Twice a second while she's down: kept down, and up again 5 seconds after the fighting stops (30 at most).
-function this.whileDown(r)
-	downTicks = downTicks + 1
-	if r.mobile.fatigue.current > -50 then knockOut(r) end
-	if (downTicks >= 10 and not fightGoingOn(r)) or downTicks >= 60 then this.getUp(r) end
-end
-
---- Before a hit lands on her: a hit that would leave her at almost nothing doesn't land, and knocks her down instead;
---- while she's down, none land. (Let through but trimmed to leave her at 1, the hit still killed her.)
-function this.onDamage(e)
-	local r = this.her()
-	if not r or e.reference ~= r then return end
-	local st = this.state(r)
-	if st.down then e.block = true e.damage = 0 return end
-	if e.mobile.health.current - e.damage < 3 then
-		e.block = true
-		e.damage = 0
-		st.down = true   -- (at once, so no other hit this frame lands; the rest of going down next frame)
-		this.later(r, this.goDown)
-	end
-end
-
---- If she dies anyway (a way round the hit above), she comes back next to him a few seconds later, as she was.
-function this.comeBack(r)
-	if not r.mobile or not r.mobile.isDead then return end
-	r.mobile:resurrect({ resetState = false })
-	this.later(r, function(x)
-		this.state(x).down = false
-		this.restoreStats(x)
-		tes3.setStatistic({ reference = x, name = "health", current = math.floor(x.mobile.health.base * 0.3) })
-		look.apply(x)
-		this.bringToPlayer(x)
-		log("came back")
-		brain.happened("you came back")
-	end)
-end
-
+--- She died: she stays where she fell, until he revives her at her body.
 function this.onDeath(e)
 	local r = this.her()
 	if r and e.reference == r then
-		log("died anyway; back in a few seconds")
-		brain.happened("you went down")
-		this.later(r, this.comeBack, 5)
+		log("died; waiting to be revived")
+		brain.happened("you died")
 	elseif e.reference == tes3.player then brain.happened(this.ownerName() .. " died") end
 end
 
-local talkNext = false
+--- He used her body: she's back on her feet right there, with her level-ups and look, half her health, following him.
+function this.revive(r)
+	if not r.mobile or not r.mobile.isDead then return end
+	r.mobile:resurrect({ resetState = false })
+	this.later(r, function(x)
+		if not x.mobile then return end
+		this.restoreStats(x)
+		tes3.setStatistic({ reference = x, name = "health", current = math.floor(x.mobile.health.base * 0.5) })
+		look.apply(x)
+		this.state(x).mode = "follow"
+		setFollow(x)
+		log("revived")
+		brain.happened(this.ownerName() .. " revived you")
+	end)
+end
 
---- Talking to her: follow, wait, or the game's own talk.
+--- Her character never speaks with the game's own voice (greetings, idle lines, combat shouts, hit sounds): she's the
+--- companion from the voice app, and her voice is that one, in the call. The game's voice made her an NPC.
+function this.onInfoFilter(e)
+	if e.passes == false or not e.dialogue or e.dialogue.type ~= tes3.dialogueType.voice then return end
+	local r = this.her()
+	if r and e.reference == r then e.passes = false end
+end
+
+--- Using her: follow or wait. (No "Talk": the game's chat window made her an NPC. Using her body revives her.)
 function this.onActivate(e)
 	local r = this.her()
 	if not r or e.target ~= r or e.activator ~= tes3.player then return end
-	if talkNext then talkNext = false return end
-	if r.mobile and r.mobile.isDead then return end
+	if r.mobile and r.mobile.isDead then this.revive(r) return false end
 	local st = this.state(r)
 	tes3.messageBox({
 		message = r.object.name .. (st.mode == "wait" and " is waiting here." or " is with you."),
-		buttons = { "Follow me", "Wait here", "Talk", "Never mind" },
+		buttons = { "Follow me", "Wait here", "Never mind" },
 		callback = function(m)
 			if m.button == 0 then this.follow(r)
-			elseif m.button == 1 then this.wait(r)
-			elseif m.button == 2 then
-				talkNext = true
-				this.later(r, function(x) tes3.player:activate(x) end)
-			end
+			elseif m.button == 1 then this.wait(r) end
 		end,
 	})
 	return false
@@ -682,7 +622,7 @@ function this.init()
 	event.register(tes3.event.activate, this.onActivate)
 	event.register(tes3.event.journal, this.onJournal)
 	event.register(tes3.event.death, this.onDeath)
-	event.register(tes3.event.damage, this.onDamage)
+	event.register(tes3.event.infoFilter, this.onInfoFilter)
 	event.register(tes3.event.mobileActivated, this.onMobileActivated)
 	brain.init(this, this.config)
 	log("ready (her AI: %s)", tostring(this.config.url))

@@ -320,6 +320,16 @@ local function stats(r)
 end
 local leveled   -- (her stats right after she leveled up)
 
+-- ------------------------------------------------------------------ her voice lines (the game's own: there must be none)
+
+local voices = { blocked = 0, passed = {} }
+event.register(tes3.event.infoFilter, function(e)
+	if not e.dialogue or e.dialogue.type ~= tes3.dialogueType.voice then return end
+	local r = her()
+	if not r or e.reference ~= r then return end
+	if e.passes == false then voices.blocked = voices.blocked + 1 else table.insert(voices.passed, tostring(e.info and e.info.text)) end
+end, { priority = -100 })   -- (after the mod's own filter)
+
 -- ------------------------------------------------------------------ the steps
 
 local steps = {}
@@ -467,6 +477,27 @@ table.insert(steps, function()
 		companion.follow(r)
 		waitFor(30, function() return dist(r) < 250 end, function(ok)
 			check("follows again", ok, string.format("from %.0f away to %.0f; %s", waitedAt, dist(r), companion.describeAI(r)))
+			nextStep()
+		end)
+	end)
+end)
+
+table.insert(steps, function()
+	-- (left well behind while he stands there: she runs back to him on foot, and isn't brought over on the way)
+	local r = her()
+	-- (down the same street, by the Razor Hole's door, 820 units from him at the Eight Plates door)
+	local p = PLACES["Balmora, by the Razor Hole"].position
+	moveHer(r, tes3vector3.new(p[1], p[2], p[3]))
+	local came = companion.cameOver or 0
+	local ran = false
+	later(0.5, function()
+		local start = dist(r)
+		waitFor(20, function()
+			if r.mobile.isRunning then ran = true end
+			return dist(r) < 250
+		end, function(ok)
+			check("runs to catch up, on foot", ok and ran and (companion.cameOver or 0) == came and start >= 450,
+				string.format("started %.0f away, now %.0f; ran: %s; came over %d times", start, dist(r), tostring(ran), (companion.cameOver or 0) - came))
 			nextStep()
 		end)
 	end)
@@ -888,77 +919,72 @@ end)
 
 
 for _, s in ipairs(lookSteps) do table.insert(steps, s) end
--- ------------------------------------------------------------------ knocked down, never dead
-
-local function downState(r)
-	local m = r.mobile
-	return string.format("down: %s, knocked out: %s, dead: %s, health %.0f/%.0f, fatigue %.0f", tostring(companion.state(r).down == true),
-		tostring(m.isKnockedOut), tostring(m.isDead), m.health.current, m.health.base, m.fatigue.current)
-end
+-- ------------------------------------------------------------------ dying, and being revived at her body
 
 table.insert(steps, function()
-	-- (a real fight: her health down to 2, and a mudcrab after her, whose bite would kill her. On a Balmora street: on the
-	-- Ebonheart dock the crab often never reached her)
-	coc("Balmora")
-	tes3.runLegacyScript({ command = "tgm" })   -- (he can't be hurt in these checks; off again after)
-	waitFor(15, function() local x = her() return x and sameCell(x) and dist(x) < 400 end, function()
-		local r = her()
-		tes3.setStatistic({ reference = r, name = "health", current = 2 })
-		local crab = tes3.createReference({ object = "mudcrab", position = companion.spotNear(r, 150, { tes3.player, r }), orientation = r.orientation, cell = r.cell })
-		later(0.5, function()
-			-- (a crab she can't kill before it bites: she fights back, and won one run before it got a bite in)
-			tes3.setStatistic({ reference = crab, name = "health", value = 500 })
-			crab.mobile:startCombat(r.mobile)
-			waitFor(30, function()
-				if not companion.state(r).down and not r.mobile.isDead and crab.mobile.actionData.target ~= r.mobile then crab.mobile:startCombat(r.mobile) end
-				return companion.state(r).down == true or r.mobile.isDead
-			end, function()
-				later(1, function()
-					local m = r.mobile
-					check("goes down instead of dying", not m.isDead and m.health.current >= 1 and companion.state(r).down == true and m.isKnockedOut, downState(r))
-					-- (the crab goes for her again while she's down: nothing lands)
-					local hp = m.health.current
-					crab.mobile:startCombat(r.mobile)
-					later(5, function()
-						check("nothing hurts her while she's down", r.mobile.health.current >= hp and not r.mobile.isDead and companion.state(r).down == true,
-							string.format("health %.0f when she went down, %.0f after 5 s more of the crab; %s", hp, r.mobile.health.current, downState(r)))
-						-- (the crab turns on him: a fight still going on, she stays down; it dies, she gets up)
-						crab.mobile:startCombat(tes3.mobilePlayer)
-						later(6, function()
-							local stillDown = companion.state(r).down == true
-							local during = downState(r)
-							crab.mobile:kill()
-							waitFor(12, function() return companion.state(r).down ~= true and not r.mobile.isKnockedOut end, function(ok)
-								local m2 = r.mobile
-								check("stays down while a fight goes on, gets up after", stillDown and ok and m2.health.current >= math.floor(m2.health.base * 0.3) - 1
-									and companion.state(r).mode == "follow",
-									string.format("6 s into his fight: %s; after: %s, %s", during, downState(r), companion.describeAI(r)))
-								tes3.runLegacyScript({ command = "tgm" })
-								waitFor(10, function() return dist(r) < 400 end, function() nextStep() end)
-							end)
-						end)
-					end)
-				end)
+	-- (killed: she stays down where she fell, and doesn't come back by herself)
+	local r = her()
+	waitFor(10, function() return dist(r) < 400 end, function()
+		local where = r.position:copy()
+		local came = companion.cameOver or 0
+		r.mobile:kill()
+		later(8, function()
+			local x = her()
+			-- (her body may slide a little as she falls; what matters is she isn't brought over or back by herself)
+			check("stays dead until he revives her", x and x.mobile.isDead and (companion.cameOver or 0) == came and x.position:distance(where) < 300 and copies() == 1,
+				string.format("dead after 8 s: %s; %.0f from where she was hit (the fall); came over %d times; %d of her", tostring(x and x.mobile.isDead),
+					x and x.position:distance(where) or -1, (companion.cameOver or 0) - came, copies()))
+			nextStep()
+		end)
+	end)
+end)
+
+table.insert(steps, function()
+	-- (he goes up to her body and uses it: she's back, as she was)
+	local r = her()
+	local name = companion.shownName()
+	putHim(r.position + tes3vector3.new(60, 0, 20))
+	later(1.5, function()
+		tes3.player:activate(r)
+		waitFor(6, function() local x = her() return x and x.mobile and not x.mobile.isDead end, function(ok)
+			later(1.5, function()
+				local x = her()
+				local m = x.mobile
+				check("he revives her at her body", ok and not m.isDead and m.health.current >= math.floor(m.health.base * 0.5) - 1 and stats(x) == leveled
+					and looksLike(x, look.lookFor(name)) and companion.state(x).mode == "follow" and copies() == 1,
+					string.format("alive: %s, health %.0f/%.0f, mode %s, %d of her; %s (after leveling: %s); %s", tostring(not m.isDead), m.health.current, m.health.base,
+						companion.state(x).mode, copies(), stats(x), tostring(leveled), look.describe(x)))
+				waitFor(10, function() return dist(x) < 400 end, function() nextStep() end)
 			end)
 		end)
 	end)
 end)
 
 table.insert(steps, function()
-	-- (killed outright, a way round the knock-down: she comes back next to him, as she was)
+	-- (using her: her menu is follow or wait, no "Talk" into the game's chat window)
 	local r = her()
-	local name = companion.shownName()
-	r.mobile:kill()
-	later(1, function()
-		local died = r.mobile.isDead
-		waitFor(15, function() local x = her() return x and x.mobile and not x.mobile.isDead and sameCell(x) and dist(x) < 600 end, function(ok)
-			local x = her()
-			check("comes back if she dies anyway", died and ok and copies() == 1 and stats(x) == leveled and looksLike(x, look.lookFor(name)),
-				string.format("dead a second after: %s; now %s, %.0f away, %d of her; %s (after leveling: %s); %s", tostring(died), downState(x), dist(x),
-					copies(), stats(x), tostring(leveled), look.describe(x)))
-			nextStep()
+	tes3.player:activate(r)
+	realLater(1, function()
+		local menu = tes3ui.findMenu("MenuMessage")
+		local shown = menu and table.concat(dumpMenu(menu), " / ") or "no menu"
+		local talk = menu and #findText(menu, "Talk") > 0
+		local follow = menu and #findText(menu, "Follow me") > 0
+		local never = menu and findText(menu, "Never mind")[1]
+		if never then never:triggerEvent("mouseClick") end
+		realLater(0.5, function()
+			check("her menu has no Talk", menu ~= nil and follow and not talk, shown:sub(1, 240))
+			tes3ui.leaveMenuMode()
+			later(1, nextStep)
 		end)
 	end)
+end)
+
+table.insert(steps, function()
+	-- (over the whole run, fights included: none of the game's voice lines for her got through)
+	check("never speaks with the game's voice", #voices.passed == 0,
+		string.format("%d of her voice lines stopped, %d got through%s", voices.blocked, #voices.passed,
+			#voices.passed > 0 and (": " .. table.concat(voices.passed, " | "):sub(1, 200)) or ""))
+	nextStep()
 end)
 
 table.insert(steps, function()
